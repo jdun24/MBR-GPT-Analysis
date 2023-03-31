@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+
+# Import any necessary libraries here
+import argparse	
+import struct
+import json
+import hashlib
+
+
+#adding args
+parser = argparse.ArgumentParser(description='Analyzing forensic images.')
+
+parser.add_argument('-f',help='file being used')
+parser.add_argument('-t',help='type of partition')
+args = parser.parse_args()
+
+# Define any functions here
+def genHashFiles(inputFile, sha, md):
+	with open(inputFile, 'rb') as file:
+		file_content = file.read()
+		
+		#SHA265
+		sha.update(file_content)
+		SHA_hash_val = sha.hexdigest()
+		with open('SHA-256-' + inputFile + '.txt', 'w') as file:
+			file.write(SHA_hash_val)
+			
+		#MD5
+		md.update(file_content)
+		MD_hash_val = md.hexdigest()
+		with open('MD5-' + inputFile + '.txt', 'w') as file:
+			file.write(MD_hash_val)
+	
+
+def hexToDec(hexString):
+	bigEndianHex = ""
+	#	0x00080000 into 0x800 into 2048
+	for i in range(0, len(hexString)//2):
+		strPos = len(hexString) - (i * 2)
+		bigEndianHex += hexString[strPos - 2 : strPos]
+		
+	dec = int(bigEndianHex.replace(" ", ""), 16)
+	return dec	
+
+def hexOutput(hexString):
+	lilBytes = bytes.fromhex(hexString)
+	dec = int.from_bytes(lilBytes, byteorder='little')
+	return hex(dec)
+def decOutput(hexString):
+	lilBytes = bytes.fromhex(hexString)
+	return int.from_bytes(lilBytes, byteorder='little')
+
+
+
+def mbrFindInfo(hexString, partitionData, fileName):
+	print("\n", end="")
+	startLBA = [0]*4
+	endLBA = [0]*4
+	#find partition hex value
+	for i in range(0 , 4):
+		paritionType_val = hexString[900 + (i*32): 902 + (i*32)]
+		print('(' + paritionType_val + ')  ', end="")
+		#convert partition hex value to partition type using csv
+		for p_type in partitionData:
+			if p_type['hex'] == paritionType_val:
+				print(p_type['desc'] + ", ", end="")
+				break
+
+		#starting LBA Address
+		startLBA[i] = hexToDec(hexString[908 + (i*32): 916 + (i*32)])
+		if paritionType_val != '00':
+			print(str(startLBA[i]) + ", ", end="")
+			#ending LBA Address, start_addy + #_sectors - 1
+			num_sectors = hexToDec(hexString[916 + (i*32): 924 + (i*32)]) 
+			partitionSize = num_sectors * 512
+			#endLBA[i] = startLBA[i] + sectorSize
+			print(partitionSize)
+		else:
+			startLBA[i] = -1
+			print("0, 0")
+		
+	with open(fileName, 'rb') as f:
+		for i in range(0,4):
+			if startLBA[i] != -1:
+				print("Partition number: " + str(i + 1) )
+				f.seek(startLBA[i] + 496 )
+				lastBytes = f.read(16)
+				print("Lsat 16 bytes of boot record: " + str(lastBytes.hex(' ')))
+			else:
+				print("Partition number: " + str(i + 1) )
+				f.seek(startLBA[i] + 496 + 1)
+				lastBytes = f.read(16)
+				print("Lsat 16 bytes of boot record: " + str(lastBytes.hex(' ')))
+
+		
+def gptFindInfo(fileName):
+	print("\n", end="")
+	with open(fileName, 'rb') as f:
+		print("Partition number: 1")
+		#obtaining the number of partition entries
+		f.seek(592)
+		numOfPartitions = f.read(4).hex(' ')
+		numOfPartitions = bytes.fromhex(numOfPartitions)
+		numOfPartitions = int.from_bytes(numOfPartitions, byteorder='little')
+
+		f.seek(1024)
+		initGUID = f.read(16).hex(' ').replace(" ", "")
+		f.seek(1056)
+		startingLBA_entries = f.read(8).hex(' ').replace(" ", "")
+		startingLBA_entries_dec = hexToDec(startingLBA_entries)
+		startingLBA_entries_hex = hex(startingLBA_entries_dec)
+		lastLBA = f.read(8).hex(' ').replace(" ", "")
+		lastLBA_dec = hexToDec(lastLBA) 
+		lastLBA_hex = hex(lastLBA_dec)
+
+		print("Partition type GUID : " + initGUID.upper() )
+		print("Starting LBA address in hex: " + str(startingLBA_entries_hex) )
+		print("ending LBA address in hex: " + str(lastLBA_hex) )
+		print("starting LBA address in decimal: " + str(startingLBA_entries_dec))
+		print("ending LBA address in decimal: "  + str(lastLBA_dec))
+
+		
+		
+		for i in range(1 , numOfPartitions):	
+			print("\n", end="")
+			nextLBA = f.seek(1024 + (128 * i))
+			GUID = f.read(16).hex(' ').replace(" ", "")
+			if GUID != "00000000000000000000000000000000":
+				f.read(16)
+				startLBA = f.read(8).hex(' ').replace(" ", "")
+				startLBADec = hexToDec(startLBA)
+				startLBAHex = hex(startLBADec)
+				endLBA = f.read(8).hex(' ').replace(" ", "")
+				endLBADec = hexToDec(endLBA)
+				endLBAHex = hex(endLBADec)
+
+				print("Partition number: " + str(i + 1))
+				print("Partition type GUID : " + GUID.upper() )
+				print("Starting LBA address in hex: " +  str(startLBAHex))
+				print("ending LBA address in hex: " + str(endLBAHex ))
+				print("starting LBA address in decimal: " + str(startLBADec))
+				print("ending LBA address in decimal: "  + str(endLBADec))
+		
+			
+
+
+if __name__ == "__main__":
+	#var creation
+	fileName = args.f
+	partitionType = args.t
+	sha = hashlib.sha256()
+	md = hashlib.md5()
+	
+
+	genHashFiles(fileName, sha, md)
+	
+	with open(fileName, 'rb') as file:
+		#read first 512 bytes
+		file_content = file.read(512)
+		hex_string = ''.join('{:02x}'.format(b) for b in file_content)
+		
+	with open('PartitionTypes.json') as jsonFile:
+		partitionData = json.load(jsonFile)
+		
+	if(partitionType == 'mbr'):
+		mbrFindInfo(hex_string, partitionData, fileName)
+	elif(partitionType == 'gpt'):
+		gptFindInfo(fileName)
+	else:
+		print("error")
+			
+			
